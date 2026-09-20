@@ -1,0 +1,14 @@
+[project]
+name = "sample_size_and_drawing"
+version = "0.1.0"
+description = "Delta Table Sampling Utilities"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyspark",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
