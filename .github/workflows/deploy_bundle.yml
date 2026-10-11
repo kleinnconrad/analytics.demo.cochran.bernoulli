@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The Spark integration tests start a local Spark session, which needs Java
       - name: Set up Java
@@ -73,7 +73,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Pinned to a commit; the action's VERSION file also pins the CLI version
       - name: Install Databricks CLI
