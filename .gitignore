@@ -3,3 +3,11 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .venv/
+
+# Databricks bundle CLI state
+.databricks/
+
+# Local Spark artifacts
+spark-warehouse/
+metastore_db/
+derby.log

@@ -5,6 +5,35 @@ bundle:
 include:
   - resources/*.yml
 
+# Defaults for the job parameters. Override them for a single run with
+# `databricks bundle run <job> --params key=value,...`
+# or for a deployment with `databricks bundle deploy --var="key=value"`.
+variables:
+  catalog:
+    description: Catalog of the source table.
+    default: workspace
+  schema:
+    description: Schema of the source table and the output table.
+    default: default
+  table:
+    description: Source table (population).
+    default: test_population
+  error:
+    description: Margin of error as an absolute proportion (0.05 = +/- 5 percentage points).
+    default: "0.05"
+  proportion:
+    description: Expected proportion between 0 and 1; 0.5 gives the largest sample size.
+    default: "0.5"
+  confidence:
+    description: Confidence level in percent, between 50 and 100 (exclusive).
+    default: "95"
+  output_table:
+    description: Table the sample is written to. It is overwritten on every run.
+    default: test_population_sample
+  seed:
+    description: Random seed for the sample.
+    default: "42"
+
 targets:
   dev:
     mode: development

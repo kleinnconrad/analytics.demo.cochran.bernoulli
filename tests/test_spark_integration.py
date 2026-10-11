@@ -1,8 +1,11 @@
 import pytest
 from pyspark.sql.types import StructType, StructField, IntegerType, StringType
 
-class TestSparkSampling:
-    
+from sampling import draw_sample
+
+
+class TestDrawSample:
+
     @pytest.fixture(autouse=True)
     def setup_data(self, spark):
         """Creates a mock DataFrame of 1,000 rows for the tests to act on."""
@@ -10,32 +13,36 @@ class TestSparkSampling:
             StructField("id", IntegerType(), True),
             StructField("device_type", StringType(), True)
         ])
-        
+
         # Generate 1000 dummy rows
-        data = [(i, "sensor_a" if i % 2 == 0 else "sensor_b") for i in range(1000)]
+        self.population = 1000
+        data = [(i, "sensor_a" if i % 2 == 0 else "sensor_b") for i in range(self.population)]
         self.df = spark.createDataFrame(data, schema)
 
-    def test_bernoulli_sample_execution(self, spark):
-        """Verifies the PySpark .sample() method runs and returns an approximate target."""
-        # Setup: Target 100 rows out of the 1,000 row mock dataframe
-        target_rows = 100
-        fraction = target_rows / self.df.count()
-        
-        # Execution
-        sampled_df = self.df.sample(withReplacement=False, fraction=fraction, seed=42)
-        sampled_count = sampled_df.count()
-        
-        # Assertion: Bernoulli isn't exact, but it should be within a reasonable variance (+/- 25 rows)
-        assert 75 <= sampled_count <= 125
-        assert len(sampled_df.columns) == 2
+    def sampled_ids(self, target_size, seed):
+        return [row.id for row in draw_sample(self.df, target_size, self.population, seed).collect()]
 
-    def test_sample_never_returns_duplicates(self, spark):
-        """Verifies withReplacement=False is strictly honored."""
-        fraction = 0.5
-        sampled_df = self.df.sample(withReplacement=False, fraction=fraction, seed=42)
-        
-        # Group by ID and count. The max count for any ID should be exactly 1.
-        max_duplicates = sampled_df.groupBy("id").count().agg({"count": "max"}).collect()[0][0]
-        
-        assert max_duplicates == 1
-      
+    def test_returns_exact_target_size(self):
+        sampled_df = draw_sample(self.df, 100, self.population, seed=42)
+
+        assert sampled_df.count() == 100
+        assert sampled_df.columns == self.df.columns
+
+    def test_returns_distinct_rows_of_the_source(self):
+        ids = self.sampled_ids(100, seed=42)
+
+        assert len(set(ids)) == len(ids)
+        assert all(0 <= i < self.population for i in ids)
+
+    def test_same_seed_gives_same_sample(self):
+        assert set(self.sampled_ids(100, seed=7)) == set(self.sampled_ids(100, seed=7))
+
+    def test_different_seeds_give_different_samples(self):
+        assert set(self.sampled_ids(100, seed=1)) != set(self.sampled_ids(100, seed=2))
+
+    def test_target_not_smaller_than_population_returns_all_rows(self):
+        assert draw_sample(self.df, 5000, self.population, seed=42).count() == self.population
+
+    def test_rejects_non_positive_target(self):
+        with pytest.raises(ValueError):
+            draw_sample(self.df, 0, self.population, seed=42)

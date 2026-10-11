@@ -2,15 +2,20 @@ resources:
   jobs:
     cochran_sample_size:
       name: cochran_sample_size_calculation
-      max_concurrent_runs: 5
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: table
+          default: ${var.table}
+        - name: error
+          default: ${var.error}
+        - name: proportion
+          default: ${var.proportion}
+        - name: confidence
+          default: ${var.confidence}
       tasks:
-        - task_key: execute_cochran
+        - task_key: compute_sample_size
           notebook_task:
             notebook_path: ../src/cochran.py
-            base_parameters:
-              catalog: "workspace"
-              schema: "default"
-              table: "test_population"
-              error: "0.05"
-              proportion: "0.5"
-              confidence: "95"
