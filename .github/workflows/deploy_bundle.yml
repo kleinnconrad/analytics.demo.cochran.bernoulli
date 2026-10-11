@@ -23,6 +23,8 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/**'
+  # Manual run from the Actions tab
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -58,8 +60,8 @@ jobs:
   deploy:
     name: Validate and Deploy
     needs: test
-    # Pull requests only run the tests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Pull requests only run the tests; manual runs deploy only from main
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # One deployment at a time; a newer push waits instead of cancelling a running deployment
     concurrency:
