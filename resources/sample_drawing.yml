@@ -2,13 +2,32 @@ resources:
   jobs:
     bernoulli_sample_drawing:
       name: bernoulli_sample_drawing_process
-      max_concurrent_runs: 4
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: table
+          default: ${var.table}
+        - name: error
+          default: ${var.error}
+        - name: proportion
+          default: ${var.proportion}
+        - name: confidence
+          default: ${var.confidence}
+        - name: output_table
+          default: ${var.output_table}
+        - name: seed
+          default: ${var.seed}
       tasks:
-        - task_key: execute_bernoulli
+        - task_key: compute_sample_size
+          notebook_task:
+            notebook_path: ../src/cochran.py
+        - task_key: draw_sample
+          depends_on:
+            - task_key: compute_sample_size
           notebook_task:
             notebook_path: ../src/bernoulli_sampling.py
             base_parameters:
-              catalog: "workspace"
-              schema: "default"
-              table: "test_population"
-              target_size: "5"
+              # Sample size set by the Cochran task via dbutils.jobs.taskValues
+              target_size: "{{tasks.compute_sample_size.values.sample_size}}"

@@ -4,11 +4,17 @@ version = "0.1.0"
 description = "Delta Table Sampling Utilities"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "pyspark",
-]
+# Databricks provides PySpark at runtime; the bundle has no runtime dependencies of its own.
+dependencies = []
 
 [dependency-groups]
 dev = [
+    # Same Spark version as Databricks serverless environment version 5
+    # (Databricks Runtime 18, Apache Spark 4.1)
+    "pyspark~=4.1.0",
     "pytest",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

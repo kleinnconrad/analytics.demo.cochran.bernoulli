@@ -1,66 +1,84 @@
-name: Deploy Databricks Bundle
+name: Test and Deploy Databricks Bundle
 
 on:
-  push:
+  pull_request:
     branches:
-      - main  # Change this if your default branch is 'master'
+      - main
     paths:
       - 'src/**/*.py'
       - 'tests/**/*.py'
       - 'resources/**/*.yml'
       - 'databricks.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+      - 'resources/**/*.yml'
+      - 'databricks.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/**'
+
+permissions:
+  contents: read
 
 jobs:
-  deploy:
-    name: Validate and Deploy
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --- Test Environment Setup ---
-      # 1. Set up Java (Upgraded to 17 for modern Ubuntu runner compatibility)
+      # The Spark integration tests start a local Spark session, which needs Java
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
-          
-      # 2. Install uv
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          
-      # 3. Install testing dependencies
+
+      # --locked fails the job if uv.lock does not match pyproject.toml
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
 
-      # 4. Run Unit Tests (With robust PySpark environment variables)
-      - name: Run unit tests
-        env:
-          JAVA_HOME: ${{ env.JAVA_HOME }}
-          SPARK_LOCAL_IP: "127.0.0.1"
-          PYSPARK_PYTHON: "python3"
-          PYSPARK_DRIVER_PYTHON: "python3"
-          # This arg prevents Spark from trying to open the Web UI on the runner
-          PYSPARK_SUBMIT_ARGS: "--conf spark.ui.enabled=false pyspark-shell"
-        run: uv run pytest tests/
-      # ------------------------------
+      - name: Run tests
+        run: uv run pytest
 
+  deploy:
+    name: Validate and Deploy
+    needs: test
+    # Pull requests only run the tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # One deployment at a time; a newer push waits instead of cancelling a running deployment
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+    env:
+      # The workspace host is taken from databricks.yml
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Pinned to a commit; the action's VERSION file also pins the CLI version
       - name: Install Databricks CLI
-        uses: databricks/setup-cli@main
+        uses: databricks/setup-cli@9b64c94a6d2b2e830592d80e9f14c26d32b42ad7 # v1.20.0
 
       - name: Validate Bundle
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: databricks bundle validate
 
       - name: Deploy Bundle
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: databricks bundle deploy
-        

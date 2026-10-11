@@ -1,152 +1,227 @@
-[![xy](https://github.com/kleinnconrad/sample_size_and_drawing/actions/workflows/deploy_bundle.yml/badge.svg)](https://github.com/kleinnconrad/sample_size_and_drawing/actions/workflows/deploy_bundle.yml)
+[![Test and Deploy](https://github.com/kleinnconrad/sample-drawing-with-cochran-and-bernoulli/actions/workflows/deploy_bundle.yml/badge.svg)](https://github.com/kleinnconrad/sample-drawing-with-cochran-and-bernoulli/actions/workflows/deploy_bundle.yml)
 
 # Delta Table Sampling Utilities
 
-This repository provides Python utilities packaged as a **Databricks Asset Bundle (DAB)** to calculate statistically significant sample sizes and extract unbiased data subsets using PySpark.
+This repository provides Python utilities packaged as a **Databricks Asset Bundle (DAB)**. They calculate the sample size required to estimate a proportion in a Delta table (Cochran's formula) and write a simple random sample of that size to a new Delta table using PySpark.
 
 ## Table of Contents
 1. [Overview](#overview)
 2. [Repository Structure](#repository-structure)
 3. [Sample Size Calculator (Cochran)](#sample-size-calculator-cochran)
-4. [Bernoulli Sampling](#bernoulli-sampling)
+4. [Sample Drawing (Bernoulli)](#sample-drawing-bernoulli)
 5. [Deployment & Execution](#deployment--execution)
-6. [CI/CD Pipeline Architecture](#cicd-pipeline-architecture)
+6. [Local Development](#local-development)
+7. [CI/CD Pipeline](#cicd-pipeline)
+8. [Test Suite](#test-suite)
 
 ---
 
 ## Overview
-Arbitrary sampling (e.g., `LIMIT 10000`) often creates biased, needlessly large, or statistically weak datasets. These utilities solve this by providing cloud compute cost friendly randomization and profound sample drawing to ensure reliable and cost effective dataset creation for ML, A/B testing, and analytics.
+Taking the first rows of a table (e.g., `LIMIT 10000`) does not produce a random sample: which rows are returned depends on file layout and write order, and the size is chosen without a statistical basis. The bundle provides two jobs for this task:
 
-By leveraging Databricks Asset Bundles, these utilities are structured for seamless, reproducible deployments across Databricks Serverless environments, defining infrastructure and code as a single deployable unit.
+* **`cochran_sample_size`**: Calculates the minimum sample size for estimating a proportion with a given margin of error and confidence level.
+* **`bernoulli_sample_drawing`**: Calculates that sample size and writes a simple random sample of exactly that many rows to a Delta table.
+
+**Scope:** Cochran's formula applies to estimating a single proportion from a simple random sample (for example, the share of rows with a given property). It is not a power analysis. Sample sizes for A/B tests, which compare two groups, require a two-sample power calculation with an effect size and a statistical power.
+
+**Cost:** Both jobs read the full source table. `count()` on a Delta table is usually answered from table metadata, but `.sample()` scans every row. Sampling reduces the amount of data used downstream, not the cost of the sampling step.
 
 ---
 
 ## Repository Structure
-This project is structured as a deployable bundle, separating the core Python logic from the Databricks Job definitions.
-
-* **`databricks.yml`**: The core bundle configuration defining the project scope and workspace targets.
-* **`resources/`**: Contains the YAML definitions for the Serverless Databricks Jobs.
-  * `sample_size_job.yml`: Deploys the Cochran calculation workflow.
-  * `sample_drawing.yml`: Deploys the Bernoulli sampling workflow.
-* **`src/`**: Contains the core execution scripts (`cochran.py`, `bernoulli_sampling.py`).
+* **`databricks.yml`**: Bundle configuration: bundle name, the `dev` workspace target, and the default job parameters (`variables`).
+* **`resources/`**: Job definitions for serverless Databricks Jobs.
+  * `sample_size_job.yml`: Cochran sample size calculation.
+  * `sample_drawing.yml`: Cochran calculation followed by sample drawing.
+* **`src/`**: Code deployed to the workspace.
+  * `sampling.py`: Calculation and sampling functions. Plain Python module, imported by the notebooks and the tests.
+  * `cochran.py`, `bernoulli_sampling.py`: Databricks notebooks that read the job parameters and call `sampling.py`.
+* **`tests/`**: Unit tests and Spark integration tests.
+* **`pyproject.toml`, `uv.lock`**: Development dependencies, managed with [uv](https://docs.astral.sh/uv/).
+* **`.github/`**: CI/CD workflow, Dependabot configuration, and Dependabot auto-approval.
 
 ---
 
 ## Sample Size Calculator (Cochran)
 
-Cochran's formula calculates the minimum required sample size based on your desired precision and confidence level. It works in two steps:
+Cochran's formula calculates the minimum sample size based on the desired margin of error and confidence level. It works in two steps.
 
 ### 1. Base Sample Size (Infinite Population)
 Assumes an infinitely large population.
 
 $$n_0 = \frac{Z^2 p q}{e^2}$$
 
-* **Z**: Z-value for confidence level (e.g., 1.96 for 95%).
-* **p**: Estimated proportion (typically 0.5 for maximum variance).
-* **q**: Remaining proportion (1 - p).
-* **e**: Margin of error (e.g., 0.05 for 5%).
+* **Z**: Two-sided z-value for the confidence level, computed from the standard normal distribution (e.g., 1.960 for 95%, 2.576 for 99%).
+* **p**: Expected proportion. 0.5 gives the largest sample size and is used when no estimate is available.
+* **q**: 1 - p.
+* **e**: Margin of error as an absolute proportion. 0.05 means +/- 5 percentage points, not 5% of p.
 
 ### 2. Finite Population Correction
-Adjusts the required sample size downwards based on the actual, finite row count of your Delta table.
+Reduces the sample size based on the row count of the Delta table.
 
 $$n = \frac{n_0}{1 + \frac{n_0 - 1}{N}}$$
 
-* **n**: Final corrected sample size.
-* **N**: Total population size (table row count).
+* **n**: Final sample size, rounded up to the next integer.
+* **N**: Population size (row count of the table).
+
+With the default parameters (95% confidence, p = 0.5, e = 0.05), n<sub>0</sub> rounds up to 385 rows. For a table with 1,000 rows, the correction reduces this to 278 rows.
+
+### Output
+The `cochran.py` notebook:
+* prints the population, z-value, base and corrected sample size, and the sampling fraction n / N,
+* returns the same values as JSON (`dbutils.notebook.exit`), visible in the job run output,
+* stores the sample size as the task value `sample_size` for downstream tasks.
+
+The run fails if the table cannot be read, the table is empty, or a parameter is out of range (confidence outside 50-100, p or e outside 0-1).
 
 ---
 
-## Bernoulli Sampling
+## Sample Drawing (Bernoulli)
 
-Bernoulli sampling evaluates each row independently, giving it an equal probability (fraction) of being included—similar to flipping a weighted coin for every row. 
+The `bernoulli_sample_drawing` job runs two tasks. `compute_sample_size` runs `cochran.py`. `draw_sample` runs `bernoulli_sampling.py` and receives the sample size n through the task value.
 
-Because each selection is independent, the final sample size is approximate due to natural variance. This guarantees a truly randomized, unbiased subset across the entire dataset, which is a strict prerequisite for reliable machine learning and statistical testing.
+`bernoulli_sampling.py` draws the sample in two steps:
+
+1. **Bernoulli pass:** Each row is kept independently with probability f. A Bernoulli sample with f = n / N has an expected size of n and contains fewer than n rows in about half of all runs. The fraction is therefore increased so that the expected row count m satisfies m - 4 * sqrt(m) = n. For n = 385, m is about 472. A result below n rows then has a probability below 1e-4.
+2. **Exact size:** The rows from step 1 are put in random order, and the first n rows are kept. This step processes only the small result of step 1.
+
+The result is a simple random sample without replacement of exactly n rows, which is the sampling design Cochran's formula assumes. If the table has n rows or fewer, the whole table is written.
+
+The sample is written to `output_table` in the same catalog and schema; an existing table with that name is overwritten. The run fails if:
+* `output_table` equals `table` (this would overwrite the source table),
+* the source table is empty or cannot be read,
+* the written table has fewer than n rows (probability below 1e-4; rerun with a different `seed`).
+
+**Reproducibility:** Spark derives the random numbers per partition. The same `seed` therefore reproduces a sample only as long as the table version and its file layout are unchanged. New writes, `OPTIMIZE`, or a different compute configuration produce a different sample. To keep a sample, keep the output table.
+
+The notebook can also be run interactively with a fixed sample size: open `bernoulli_sampling.py` in the workspace and set the `target_size` widget.
 
 ---
 
 ## Deployment & Execution
 
-Both the Cochran Calculator and the Bernoulli Sampler are designed to run as serverless Databricks Jobs via the Databricks CLI. 
+Both jobs run on serverless compute: the job definitions specify no cluster, so Databricks uses serverless compute for the notebook tasks. Serverless compute must be enabled in the workspace.
 
 ### Prerequisites
-Ensure you have the Databricks CLI installed and authenticated with your target workspace:
+Install the Databricks CLI and authenticate with the workspace:
 ```bash
 databricks auth login --host "https://<your-workspace-url>"
 ```
 
 ### 1. Deployment
-Validate your bundle configuration syntax and deploy the code and resources to your workspace.
+The bundle has a single target, `dev`, which uses `mode: development`. In this mode, the job names are prefixed with `[dev <user name>]` and the files are deployed to the user's workspace folder.
 
-```Bash
+```bash
+# Validate the bundle configuration
 databricks bundle validate
-```
 
-# Deploy the bundle to the active target
-```Bash
+# Deploy the bundle to the dev target
 databricks bundle deploy
 ```
 
 ### 2. Execution
-Once deployed, you can trigger the individual jobs directly from your terminal. The scripts dynamically query the active metastore to fetch exact table row counts and execute the mathematically rigorous sampling logic.
-
-```Bash
+```bash
+# Calculate the sample size only
 databricks bundle run cochran_sample_size
-```
 
-# Run the Bernoulli sampling process
-```Bash
+# Calculate the sample size and write the sample to output_table
 databricks bundle run bernoulli_sample_drawing
 ```
 
-## CI/CD Pipeline Architecture
+### 3. Parameters
+Default values are defined as `variables` in `databricks.yml`.
 
-This repository utilizes GitHub Actions to automate the continuous integration and deployment (CI/CD) of the Databricks Asset Bundle. The pipeline ensures that any changes to the underlying statistical scripts or job configurations are rigorously validated and seamlessly deployed to the Databricks Serverless environment.
+| Parameter | Default | Job | Description |
+|---|---|---|---|
+| `catalog` | `workspace` | both | Catalog of the source table |
+| `schema` | `default` | both | Schema of the source table and the output table |
+| `table` | `test_population` | both | Source table (population) |
+| `error` | `0.05` | both | Margin of error, absolute (0.05 = +/- 5 percentage points) |
+| `proportion` | `0.5` | both | Expected proportion, between 0 and 1 |
+| `confidence` | `95` | both | Confidence level in percent, between 50 and 100 |
+| `output_table` | `test_population_sample` | drawing | Table the sample is written to (overwritten on each run) |
+| `seed` | `42` | drawing | Random seed |
 
-### Deployment Trigger
-The automated workflow (`deploy_bundle.yml`) is triggered automatically upon a `push` to the `main` branch, specifically when modifications occur in critical paths:
-* `src/**/*.py`: Core PySpark sampling logic (Cochran & Bernoulli).
-* `resources/**/*.yml`: Databricks Job configurations and parameter mappings.
-* `databricks.yml`: The overarching asset bundle infrastructure definition.
+Override parameters for a single run:
+```bash
+databricks bundle run bernoulli_sample_drawing --params table=orders,output_table=orders_sample
+```
 
-### Workflow Steps
-The pipeline executes on a headless Ubuntu runner and orchestrates the following steps:
-1. **Source Checkout:** Retrieves the latest committed code.
-2. **CLI Initialization:** Installs the official Databricks CLI (`setup-cli@main`) to enable bundle commands.
-3. **Bundle Validation:** Runs `databricks bundle validate` to verify the syntactic and structural integrity of the YAML configurations and file paths before attempting infrastructure changes.
-4. **Target Deployment:** Executes `databricks bundle deploy` to push the updated Python notebooks and job definitions to the Databricks workspace.
+Change the defaults for a deployment:
+```bash
+databricks bundle deploy --var="table=orders"
+```
 
-### Security & Authentication
-Authentication with the Databricks environment is handled securely via GitHub Actions Secrets. No credentials are hardcoded into the repository.
-* **`DATABRICKS_HOST`**: The target Databricks Workspace URL.
-* **`DATABRICKS_TOKEN`**: A scoped Personal Access Token (PAT) authorizing the headless deployment process.
+---
 
-### Pipeline Test Suite Overview
+## Local Development
 
-The CI/CD pipeline includes a comprehensive test suite that runs automatically via GitHub Actions before any code is deployed to the Databricks workspace. This "shift-left" approach ensures both the mathematical accuracy of the sampling formulas and the stability of the PySpark execution.
+Requirements:
+* Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
+* Java 17 or newer for the Spark integration tests. Without Java, these tests are skipped.
 
-The test suite is divided into three main components:
+```bash
+# Install the development dependencies (PySpark, pytest)
+uv sync
+
+# Run all tests
+uv run pytest
+```
+
+PySpark is a development dependency only; Databricks provides it at runtime. Its version is pinned to the Spark version of the Databricks serverless environment (Spark 4.1). Update the pin in `pyproject.toml` when the serverless environment moves to a new Spark version.
+
+---
+
+## CI/CD Pipeline
+
+The workflow `.github/workflows/deploy_bundle.yml` runs on pull requests to `main` and on pushes to `main`, if at least one of these paths changed:
+* `src/**/*.py`, `tests/**/*.py`
+* `resources/**/*.yml`, `databricks.yml`
+* `pyproject.toml`, `uv.lock`
+* `.github/**`
+
+### Jobs
+1. **Run Tests** (pull requests and pushes):
+   1. Check out the repository.
+   2. Install Java 17 (Temurin) for the local Spark session.
+   3. Install uv.
+   4. Install the dependencies with `uv sync --locked`. The job fails if `uv.lock` does not match `pyproject.toml`.
+   5. Run `uv run pytest`.
+2. **Validate and Deploy** (pushes to `main` only, after the tests have passed):
+   1. Check out the repository.
+   2. Install the Databricks CLI. The `databricks/setup-cli` action is pinned to a commit, which also pins the CLI version.
+   3. Run `databricks bundle validate`.
+   4. Run `databricks bundle deploy` to the `dev` target.
+
+Deployments run one at a time. A deployment that starts while another is running waits for it to finish.
+
+### Authentication
+The workspace URL is read from `databricks.yml`. The deployment authenticates with the GitHub Actions secret **`DATABRICKS_TOKEN`**, a personal access token (PAT). The workflow token has read-only access to the repository contents.
+
+### Dependency Updates
+* Dependabot checks weekly for updates of the uv dependencies (`uv.lock`) and the GitHub Actions used in the workflows. PySpark receives only patch updates, so that it stays on the Spark version of the serverless environment.
+* `.github/workflows/approve-dependabot.yml` approves pull requests opened by Dependabot. The tests run on these pull requests like on any other; the approval does not merge them.
+
+---
+
+## Test Suite
+
+The tests import the functions from `src/sampling.py`, the same code the notebooks run on Databricks.
 
 ### Test Configuration (`conftest.py`)
-This file establishes the testing environment. 
-* **Local Spark Session:** It spins up a lightweight, local PySpark session (`local[1]`) specifically for the GitHub Actions runner. 
-* **Cost Efficiency:** By mocking the Spark environment locally, the pipeline validates Spark commands without needing to spin up or pay for a real Databricks cluster.
+* Starts a local PySpark session (`local[1]`) once per test run. This is a real Spark engine, not a mock, so no Databricks compute is needed.
+* Skips the Spark tests when no Java runtime is found.
 
-### Mathematical Logic Tests (`test_sampling_logic.py`)
-These unit tests validate the pure Python functions responsible for calculating sample sizes and probabilities. Because these do not rely on Spark, they execute instantly.
+### Calculation Tests (`test_sampling_logic.py`)
+These tests do not use Spark.
+* **z-value:** Matches the tabulated values for 90, 95, 98, and 99% confidence; rejects values outside 50-100, including the fraction `0.95`.
+* **Cochran sample size:** 385 rows for an infinite population, 278 rows for 1,000 rows, never more rows than the population, 0 for an empty table, and errors for out-of-range margin of error, proportion, confidence, or population.
+* **Oversampled fraction:** The expected row count lies four standard deviations above the target size; the fraction keeps its precision for tables with billions of rows and is capped at 1.0.
+* **Table names:** Each part is quoted with backticks.
 
-* **Cochran Calculator Tests:**
-  * **Infinite Population:** Verifies that standard statistical inputs (e.g., 95% confidence, 5% margin of error) return the textbook baseline sample size (385 rows).
-  * **Finite Population Correction:** Ensures the formula correctly reduces the required sample size when applied to a known, smaller table.
-  * **Edge Cases:** Confirms the calculator safely returns `0` if an empty table is passed.
-
-* **Bernoulli Fraction Tests:**
-  * **Standard Calculation:** Verifies the translation of a target row count into the correct probability fraction (e.g., 1,000 out of 100,000 returns `0.01`).
-  * **Oversampling Prevention:** Ensures that if a user requests more rows than the table contains, the fraction safely caps at `1.0` (100%) rather than throwing a mathematical error.
-
-### PySpark Integration Tests (`test_spark_integration.py`)
-These tests use the local Spark session to verify that the generated mathematical parameters work correctly when passed into actual Databricks PySpark commands.
-
-* **Mock Data Generation:** Programmatically creates a mock DataFrame of 1,000 rows in memory to act as the test subject.
-* **Bernoulli Execution & Variance:** Applies the `.sample()` method to the mock data. It asserts that the final row count falls within a mathematically acceptable variance range (e.g., aiming for 100 rows will return roughly between 75 and 125 rows), validating true Bernoulli behavior.
-* **Duplicate Prevention:** Runs the sampling algorithm and explicitly checks the output to guarantee that no duplicate IDs were selected, ensuring `withReplacement=False` is strictly honored by the engine.
-  
+### Spark Integration Tests (`test_spark_integration.py`)
+These tests run `draw_sample` on a DataFrame of 1,000 rows.
+* **Exact size:** A target of 100 rows returns exactly 100 rows with the source columns.
+* **Distinct source rows:** The sample contains no duplicate IDs and only IDs from the source.
+* **Seed:** The same seed returns the same sample; different seeds return different samples.
+* **Small tables:** A target size not smaller than the table returns all rows.
