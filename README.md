@@ -180,14 +180,16 @@ The workflow `.github/workflows/deploy_bundle.yml` runs on pull requests to `mai
 * `pyproject.toml`, `uv.lock`
 * `.github/**`
 
+The workflow can also be started manually: **Actions** tab > **Test and Deploy Databricks Bundle** > **Run workflow**. A manual run on `main` runs the tests and deploys; a manual run on another branch only runs the tests.
+
 ### Jobs
-1. **Run Tests** (pull requests and pushes):
+1. **Run Tests** (pull requests, pushes, and manual runs):
    1. Check out the repository.
    2. Install Java 17 (Temurin) for the local Spark session.
    3. Install uv.
    4. Install the dependencies with `uv sync --locked`. The job fails if `uv.lock` does not match `pyproject.toml`.
    5. Run `uv run pytest`.
-2. **Validate and Deploy** (pushes to `main` only, after the tests have passed):
+2. **Validate and Deploy** (pushes to `main` and manual runs on `main`, after the tests have passed):
    1. Check out the repository.
    2. Install the Databricks CLI. The `databricks/setup-cli` action is pinned to a commit, which also pins the CLI version.
    3. Run `databricks bundle validate`.
