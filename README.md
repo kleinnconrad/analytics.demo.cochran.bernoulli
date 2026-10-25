@@ -1,4 +1,4 @@
-[![Test and Deploy](https://github.com/kleinnconrad/sample-drawing-with-cochran-and-bernoulli/actions/workflows/deploy_bundle.yml/badge.svg)](https://github.com/kleinnconrad/sample-drawing-with-cochran-and-bernoulli/actions/workflows/deploy_bundle.yml)
+[![Test and Deploy](https://github.com/kleinnconrad/analytics.demo.cochran.bernoulli/actions/workflows/deploy_bundle.yml/badge.svg)](https://github.com/kleinnconrad/analytics.demo.cochran.bernoulli/actions/workflows/deploy_bundle.yml)
 
 # Delta Table Sampling Utilities
 
